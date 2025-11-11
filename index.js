@@ -25,7 +25,7 @@ const client = new MongoClient(uri, {
 
 async function run() {
   try {
-    await client.connect();
+    // await client.connect();
 
     // Collections
     const userCollection = client.db("usersDB").collection("users");
@@ -51,22 +51,10 @@ async function run() {
       const id = req.params.id;
       const product = req.body;
       const query = { _id: new ObjectId(id) };
-      const options = { upsert: true };
       const updateProduct = {
-        $set: {
-          name: product.name,
-          image: product.image,
-          price: product.price,
-          type: product.type,
-          rating: product.rating,
-          brand: product.brand,
-        },
+        $set: product,
       };
-      const result = await productCollection.updateOne(
-        query,
-        updateProduct,
-        options
-      );
+      const result = await productCollection.updateOne(query, updateProduct);
       res.send(result);
     });
 
@@ -88,8 +76,14 @@ async function run() {
 
     // User API starts
     app.get("/users", async (req, res) => {
+      const { searchUser } = req.query;
       const cursor = userCollection.find();
-      const result = await cursor.toArray();
+      let result = await cursor.toArray();
+      if (searchUser) {
+        result = await userCollection
+          .find({ name: { $regex: searchUser, $options: "i" } })
+          .toArray();
+      }
       res.send(result);
     });
 
@@ -150,7 +144,7 @@ async function run() {
       res.send(result);
     });
 
-    await client.db("admin").command({ ping: 1 });
+    // await client.db("admin").command({ ping: 1 });
     console.log(
       "Pinged your deployment. You successfully connected to MongoDB!"
     );
