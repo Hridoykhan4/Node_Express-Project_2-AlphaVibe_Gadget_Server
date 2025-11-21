@@ -1,4 +1,5 @@
 const express = require("express");
+var jwt = require("jsonwebtoken");
 const app = express();
 const port = process.env.PORT || 5000;
 const cors = require("cors");
@@ -30,6 +31,57 @@ async function run() {
     // Collections
     const userCollection = client.db("usersDB").collection("users");
     const productCollection = client.db("productDB").collection("products");
+    const cartCollection = client.db("productDB").collection("cart");
+
+    /* JWT Start */
+    app.post('/jwt', (req, res) => {
+      const user = req.body;
+      const token = jwt.sign
+    })
+
+    /* JWT End */
+
+
+
+
+
+
+
+   /* CART START*/
+
+    app.post("/cart", async (req, res) => {
+      res.send(await cartCollection.insertOne(req.body));
+    });
+
+    /*  // Get Owner Products
+    app.get("/my-products", async (req, res) => {
+      const { email } = req.query;
+      const result = await productCollection
+        .find({ "shopDetails.ownerEmail": email })
+        .toArray();
+      res.send(result);
+    }); */
+
+    /* Get My Cart Products */
+    app.get("/my-cart", async (req, res) => {
+      const { email } = req.query;
+      const result = await cartCollection
+        .find({ "customerInfo.email": email })
+        .toArray();
+
+      for (const product of result) {
+        const matchedProduct = await productCollection.findOne({
+          _id: new ObjectId(product.productId),
+        });
+        if (matchedProduct) {
+          product.productInfo = matchedProduct;
+        }
+      }
+
+      res.send(result);
+    });
+
+    /* CART END */
 
     // Post a product
     app.post("/addProducts", async (req, res) => {
@@ -59,11 +111,54 @@ async function run() {
     });
 
     // Get All Products of en email
-    app.get("/myProducts/:email", async (req, res) => {
-      const email = req.params.email;
-      const query = { email };
-      const products = await productCollection.find(query).toArray();
+    app.get("/products", async (req, res) => {
+      const { featured } = req.query;
+      let cursor = productCollection.find();
+      if (featured === "homeFeatured") {
+        cursor.limit(9);
+      }
+      const products = await cursor.toArray();
       res.send(products);
+    });
+
+    // Get Owner Products
+    app.get("/my-products", async (req, res) => {
+      const { email } = req.query;
+      const result = await productCollection
+        .find({ "shopDetails.ownerEmail": email })
+        .toArray();
+
+      for (const product of result) {
+        const productsExistsInCartCount = await cartCollection.countDocuments({
+          productId: product._id.toString(),
+        });
+        product.productCount = productsExistsInCartCount;
+        await productCollection.updateOne(
+          { _id: new ObjectId(product._id) },
+          { $set: { productCount: productsExistsInCartCount } }
+        );
+      }
+
+      res.send(result);
+    });
+
+    app.get("/my-products/customer/:id", async (req, res) => {
+      const id = req.params.id;
+      const result = await cartCollection
+        .find({
+          productId: id,
+        })
+        .toArray();
+      res.send(result);
+    });
+
+    app.patch("/products/:id", async (req, res) => {
+      res.send(
+        await cartCollection.updateOne(
+          { _id: new ObjectId(req.params.id) },
+          { $set: req.body }
+        )
+      );
     });
 
     // Delete a product
