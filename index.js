@@ -1,5 +1,6 @@
 const express = require("express");
 var jwt = require("jsonwebtoken");
+const cookieParser = require("cookie-parser");
 const app = express();
 const port = process.env.PORT || 5000;
 const cors = require("cors");
@@ -10,8 +11,38 @@ app.get("/", (req, res) => {
 });
 
 // Middleware
-app.use(cors());
+app.use(
+  cors({
+    origin: ["http://localhost:5173"],
+    credentials: true,
+  })
+);
 app.use(express.json());
+app.use(cookieParser());
+const cookieOptions = {
+  httpOnly: true,
+  secure: process.env.NODE_ENV === "production",
+  sameSite: process.env.NODE_ENV === "production" ? "none" : "strict",
+};
+
+// CUSTOM
+const verifyToken = (req, res, next) => {
+  const token = req.cookies?.token;
+  if (!token) return res.status(401).send({ message: "Unauthorized Access" });
+  jwt.verify(token, process.env.GADGET_ACCESS_TOKEN, (err, decoded) => {
+    if (err) return res.status(401).send({ message: "Unauthorized Access" });
+    req.user = decoded;
+    next();
+  });
+};
+
+const verifyForbiddenAccess = (req, res, next) => {
+  const tokenEmail = req.user?.email;
+  const requestedEmail = req.query.email;
+  if (tokenEmail !== requestedEmail)
+    return res.status(403).send({ message: "Forbidden Access" });
+  next();
+};
 
 /* MongoDB starts */
 const uri = `mongodb+srv://${process.env.GADGET_DB}:${process.env.GADGET_PASS}@alphavibe-gadgets.fkqtfio.mongodb.net/?retryWrites=true&w=majority&appName=AlphaVibe-Gadgets`;
@@ -34,50 +65,84 @@ async function run() {
     const cartCollection = client.db("productDB").collection("cart");
 
     /* JWT Start */
-    app.post('/jwt', (req, res) => {
+    app.post("/jwt", (req, res) => {
       const user = req.body;
-      const token = jwt.sign
-    })
+      const token = jwt.sign(user, process.env.GADGET_ACCESS_TOKEN, {
+        expiresIn: "365d",
+      });
+      res.cookie("token", token, cookieOptions).send({ success: true });
+    });
+
+    app.post("/logout", (req, res) => {
+      res
+        .clearCookie("token", { ...cookieOptions, maxAge: 0 })
+        .send({ success: true });
+    });
 
     /* JWT End */
 
-
-
-
-
-
-
-   /* CART START*/
+    /* CART START*/
 
     app.post("/cart", async (req, res) => {
-      res.send(await cartCollection.insertOne(req.body));
+      try {
+        const {
+          productId,
+          customerInfo: { email },
+        } = req.body;
+        const checkExist = await cartCollection.findOne({
+          productId,
+          "customerInfo.email": email,
+        });
+        if (checkExist) {
+          // console.log(
+          //   `Conflict: Item ${productId} already exists for email ${email}`
+          // );
+          return res
+            .status(409)
+            .send({ message: "Item already in Cart", cartItem: checkExist });
+        }
+        res.send(await cartCollection.insertOne(req.body));
+      } catch (err) {
+        console.log(err);
+        res
+          .status(500)
+          .send({ message: "Internal Server Error", details: err.message });
+      }
     });
 
-    /*  // Get Owner Products
-    app.get("/my-products", async (req, res) => {
-      const { email } = req.query;
-      const result = await productCollection
-        .find({ "shopDetails.ownerEmail": email })
-        .toArray();
-      res.send(result);
-    }); */
-
     /* Get My Cart Products */
-    app.get("/my-cart", async (req, res) => {
-      const { email } = req.query;
-      const result = await cartCollection
-        .find({ "customerInfo.email": email })
-        .toArray();
+    app.get(
+      "/my-cart",
+      verifyToken,
+      verifyForbiddenAccess,
+      async (req, res) => {
+        const { email } = req.query;
+        const result = await cartCollection
+          .find({ "customerInfo.email": email })
+          .toArray();
 
-      for (const product of result) {
-        const matchedProduct = await productCollection.findOne({
-          _id: new ObjectId(product.productId),
-        });
-        if (matchedProduct) {
-          product.productInfo = matchedProduct;
+        for (const product of result) {
+          const matchedProduct = await productCollection.findOne({
+            _id: new ObjectId(product.productId),
+          });
+          if (matchedProduct) {
+            product.productInfo = matchedProduct;
+          }
         }
-      }
 
+        res.send(result);
+      }
+    );
+
+    // DELETE from CART and decrease the productCount
+    app.delete("/my-cart/:id", async (req, res) => {
+      const id = req.params.id;
+      // const { productId } = req.body;
+      const result = await cartCollection.deleteOne({ _id: new ObjectId(id) });
+      // await productCollection.updateOne(
+      //   { _id: new ObjectId(productId) },
+      //   { $inc: { productCount: -1 } }
+      // );
       res.send(result);
     });
 
@@ -112,8 +177,17 @@ async function run() {
 
     // Get All Products of en email
     app.get("/products", async (req, res) => {
-      const { featured } = req.query;
-      let cursor = productCollection.find();
+      const { featured, searchVal } = req.query;
+      let query = {};
+      if (searchVal) {
+        query = {
+          $or: [
+            { name: { $regex: searchVal, $options: "i" } },
+            { brand: { $regex: searchVal, $options: "i" } },
+          ],
+        };
+      }
+      let cursor = productCollection.find(query);
       if (featured === "homeFeatured") {
         cursor.limit(9);
       }
@@ -121,26 +195,42 @@ async function run() {
       res.send(products);
     });
 
-    // Get Owner Products
+    /*     // Get Owner Products
     app.get("/my-products", async (req, res) => {
       const { email } = req.query;
       const result = await productCollection
         .find({ "shopDetails.ownerEmail": email })
         .toArray();
-
-      for (const product of result) {
-        const productsExistsInCartCount = await cartCollection.countDocuments({
-          productId: product._id.toString(),
-        });
-        product.productCount = productsExistsInCartCount;
-        await productCollection.updateOne(
-          { _id: new ObjectId(product._id) },
-          { $set: { productCount: productsExistsInCartCount } }
-        );
-      }
-
       res.send(result);
-    });
+    }); */
+
+    // Get Owner Products
+    app.get(
+      "/my-products",
+      verifyToken,
+      verifyForbiddenAccess,
+      async (req, res) => {
+        const { email } = req.query;
+        const result = await productCollection
+          .find({ "shopDetails.ownerEmail": email })
+          .toArray();
+
+        for (const product of result) {
+          const productsExistsInCartCount = await cartCollection.countDocuments(
+            {
+              productId: product._id.toString(),
+            }
+          );
+          product.count = productsExistsInCartCount;
+          // await productCollection.updateOne(
+          //   { _id: new ObjectId(product._id) },
+          //   { $set: { productCount: productsExistsInCartCount } }
+          // );
+        }
+
+        res.send(result);
+      }
+    );
 
     app.get("/my-products/customer/:id", async (req, res) => {
       const id = req.params.id;
@@ -199,7 +289,7 @@ async function run() {
     // Modify
     app.patch("/users", async (req, res) => {
       const { email, lastSignInTime } = req.body;
-      console.log(email, lastSignInTime);
+      // console.log(email, lastSignInTime);
       const filter = { email };
       const updateUser = {
         $set: {
